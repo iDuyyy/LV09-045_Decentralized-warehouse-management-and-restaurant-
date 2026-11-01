@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
@@ -158,7 +157,7 @@ namespace RestaurantInventory.API.Services
 
         public async Task<ApiResponse<DonMuaHangResponseDto>> NhapKhoTheoPOAsync(int userId, NhapKhoPODto dto)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
                 var po = await _context.DonMuaHangs
@@ -170,28 +169,11 @@ namespace RestaurantInventory.API.Services
                     return ApiResponse<DonMuaHangResponseDto>.Fail("Đơn mua hàng không tồn tại");
                 }
 
-                if (po.TrangThai != "DA_DUYET")
-                {
-                    return ApiResponse<DonMuaHangResponseDto>.Fail("Chỉ được nhập kho theo đơn mua hàng đã được duyệt và chưa nhập đủ");
-                }
-
                 var kho = await _context.Khos.FindAsync(dto.MaKho);
                 if (kho == null)
                 {
                     return ApiResponse<DonMuaHangResponseDto>.Fail("Kho nhập không tồn tại");
                 }
-
-                var quantitiesOrdered = po.CTDonMuaHangs
-                    .GroupBy(line => line.MaHangHoa)
-                    .ToDictionary(group => group.Key, group => group.Sum(line => line.SoLuongDat));
-
-                var quantitiesAlreadyReceived = await _context.GiaoDichKhos
-                    .Where(g => g.MaDonMuaHang == po.MaDonMuaHang && g.LoaiGiaoDich == "NHAP_KHO")
-                    .SelectMany(g => g.CTGiaoDichKhos)
-                    .GroupBy(line => line.MaHangHoa)
-                    .Select(group => new { MaHangHoa = group.Key, SoLuong = group.Sum(line => line.SoLuong) })
-                    .ToDictionaryAsync(group => group.MaHangHoa, group => group.SoLuong);
-                var quantitiesReceivedNow = new Dictionary<int, decimal>();
 
                 // Create Inventory Transaction (GiaoDichKho)
                 var phieuNhapCode = $"NK-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid().ToString().Substring(0, 4).ToUpper()}";
@@ -210,27 +192,11 @@ namespace RestaurantInventory.API.Services
 
                 foreach (var item in dto.LoHangs)
                 {
-                    if (!quantitiesOrdered.TryGetValue(item.MaHangHoa, out var quantityOrdered))
-                    {
-                        await transaction.RollbackAsync();
-                        return ApiResponse<DonMuaHangResponseDto>.Fail($"Mặt hàng ID {item.MaHangHoa} không thuộc đơn mua hàng");
-                    }
-
-                    quantitiesReceivedNow.TryGetValue(item.MaHangHoa, out var receivedNow);
-                    quantitiesAlreadyReceived.TryGetValue(item.MaHangHoa, out var receivedPreviously);
-                    if (receivedPreviously + receivedNow + item.SoLuongNhan > quantityOrdered)
-                    {
-                        await transaction.RollbackAsync();
-                        return ApiResponse<DonMuaHangResponseDto>.Fail($"Số lượng nhận mặt hàng ID {item.MaHangHoa} vượt số lượng còn lại trong đơn mua hàng");
-                    }
-
                     if (item.HanSuDung <= DateTime.UtcNow.Date)
                     {
                         await transaction.RollbackAsync();
                         return ApiResponse<DonMuaHangResponseDto>.Fail($"Hạn sử dụng của lô {item.SoLo} không hợp lệ (đã hoặc gần hết hạn)");
                     }
-
-                    quantitiesReceivedNow[item.MaHangHoa] = receivedNow + item.SoLuongNhan;
 
                     // Create LoHang
                     var loHang = new LoHang
@@ -282,15 +248,8 @@ namespace RestaurantInventory.API.Services
                 giaoDich.TongGiaTri = tongGiaTriGiaoDich;
                 await _context.GiaoDichKhos.AddAsync(giaoDich);
 
-                // Keep partially received orders open for the remaining quantities.
-                po.TrangThai = quantitiesOrdered.All(entry =>
-                {
-                    quantitiesAlreadyReceived.TryGetValue(entry.Key, out var receivedPreviously);
-                    quantitiesReceivedNow.TryGetValue(entry.Key, out var receivedNow);
-                    return receivedPreviously + receivedNow >= entry.Value;
-                })
-                    ? "DA_NHAP_KHO"
-                    : "DA_DUYET";
+                // Update PO status
+                po.TrangThai = "DA_NHAP_KHO";
 
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
@@ -312,7 +271,7 @@ namespace RestaurantInventory.API.Services
 
         public async Task<ApiResponse<XuatKhoResultDto>> XuatKhoFEFOAsync(int userId, XuatKhoFefoDto dto)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
                 var kho = await _context.Khos.FindAsync(dto.MaKho);
@@ -363,17 +322,9 @@ namespace RestaurantInventory.API.Services
                     // Query batches sorted by Expiration Date (HanSuDung ASC) - FEFO algorithm
                     // Fetch available non-expired batches
                     var availableBatches = await _context.LoHangs
-                        .Where(l => l.MaHangHoa == requestItem.MaHangHoa && l.MaKho == dto.MaKho && l.SoLuongTon > 0 && l.HanSuDung > DateTime.UtcNow.Date)
+                        .Where(l => l.MaHangHoa == requestItem.MaHangHoa && l.MaKho == dto.MaKho && l.SoLuongTon > 0 && l.HanSuDung > DateTime.UtcNow)
                         .OrderBy(l => l.HanSuDung)
-                        .ThenBy(l => l.MaLo)
                         .ToListAsync();
-
-                    if (availableBatches.Sum(batch => batch.SoLuongTon) < requestItem.SoLuongXuat)
-                    {
-                        await transaction.RollbackAsync();
-                        return ApiResponse<XuatKhoResultDto>.Fail(
-                            $"[XUẤT ÂM KHO BỊ CHẶN] Mặt hàng '{hangHoa.TenHangHoa}' không đủ số lượng trong các lô chưa hết hạn!");
-                    }
 
                     decimal remainingToDeduct = requestItem.SoLuongXuat;
                     var itemResult = new XuatKhoItemResultDto
@@ -468,9 +419,6 @@ namespace RestaurantInventory.API.Services
                 MaNguoiKiem = userId,
                 TrangThai = "CHO_DUYET"
             };
-            var itemsCountedByTotal = new HashSet<int>();
-            var itemsCountedByLot = new HashSet<int>();
-            var lotsCounted = new HashSet<(int MaHangHoa, int MaLo)>();
 
             foreach (var detail in dto.ChiTiets)
             {
@@ -478,39 +426,6 @@ namespace RestaurantInventory.API.Services
                 if (hangHoa == null)
                 {
                     return ApiResponse<KiemKeResponseDto>.Fail($"Mặt hàng ID {detail.MaHangHoa} không tồn tại");
-                }
-
-                if (detail.MaLo.HasValue)
-                {
-                    if (itemsCountedByTotal.Contains(detail.MaHangHoa))
-                    {
-                        return ApiResponse<KiemKeResponseDto>.Fail("Mỗi mặt hàng chỉ được kiểm kê một lần theo tổng kho hoặc theo từng lô");
-                    }
-
-                    var lo = await _context.LoHangs.FindAsync(detail.MaLo.Value);
-                    if (lo == null || lo.MaHangHoa != detail.MaHangHoa || lo.MaKho != dto.MaKho)
-                    {
-                        return ApiResponse<KiemKeResponseDto>.Fail($"Lô hàng {detail.MaLo.Value} không thuộc mặt hàng hoặc kho đang kiểm kê");
-                    }
-
-                    if (!lotsCounted.Add((detail.MaHangHoa, detail.MaLo.Value)))
-                    {
-                        return ApiResponse<KiemKeResponseDto>.Fail($"Lô hàng {detail.MaLo.Value} đã được khai báo nhiều lần trong phiếu kiểm kê");
-                    }
-                    itemsCountedByLot.Add(detail.MaHangHoa);
-                }
-                else
-                {
-                    if (itemsCountedByLot.Contains(detail.MaHangHoa) || !itemsCountedByTotal.Add(detail.MaHangHoa))
-                    {
-                        return ApiResponse<KiemKeResponseDto>.Fail("Mỗi mặt hàng chỉ được kiểm kê một lần theo tổng kho hoặc theo từng lô");
-                    }
-
-                    if (await _context.LoHangs.AnyAsync(l =>
-                        l.MaHangHoa == detail.MaHangHoa && l.MaKho == dto.MaKho && l.SoLuongTon > 0))
-                    {
-                        return ApiResponse<KiemKeResponseDto>.Fail($"Mặt hàng ID {detail.MaHangHoa} có tồn theo lô; cần kiểm kê từng lô để giữ đồng bộ tồn kho");
-                    }
                 }
 
                 decimal currentBookStock = 0;
@@ -548,7 +463,7 @@ namespace RestaurantInventory.API.Services
 
         public async Task<ApiResponse<KiemKeResponseDto>> PheDuyetKiemKeAsync(int managerId, int kiemKeId)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+            using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
                 var kiemKe = await _context.KiemKeKhos
@@ -583,6 +498,27 @@ namespace RestaurantInventory.API.Services
                 {
                     if (detail.ChenhLech == 0) continue;
 
+                    // Update TonKhoTucThoi
+                    var tonKho = await _context.TonKhoTucThois
+                        .FirstOrDefaultAsync(t => t.MaHangHoa == detail.MaHangHoa && t.MaKho == kiemKe.MaKho);
+
+                    if (tonKho == null)
+                    {
+                        tonKho = new TonKhoTucThoi
+                        {
+                            MaHangHoa = detail.MaHangHoa,
+                            MaKho = kiemKe.MaKho,
+                            SoLuongTon = detail.SoLuongThucTe,
+                            NgayCapNhat = DateTime.UtcNow
+                        };
+                        await _context.TonKhoTucThois.AddAsync(tonKho);
+                    }
+                    else
+                    {
+                        tonKho.SoLuongTon = detail.SoLuongThucTe;
+                        tonKho.NgayCapNhat = DateTime.UtcNow;
+                    }
+
                     // Update Batch if specified
                     if (detail.MaLo.HasValue)
                     {
@@ -601,43 +537,6 @@ namespace RestaurantInventory.API.Services
                         DonGia = 0,
                         ThanhTien = 0
                     });
-                }
-
-                foreach (var itemAdjustment in kiemKe.CTKiemKes
-                    .GroupBy(detail => detail.MaHangHoa)
-                    .Select(group => new { MaHangHoa = group.Key, ChenhLech = group.Sum(detail => detail.ChenhLech) }))
-                {
-                    var tonKho = await _context.TonKhoTucThois
-                        .FirstOrDefaultAsync(t => t.MaHangHoa == itemAdjustment.MaHangHoa && t.MaKho == kiemKe.MaKho);
-
-                    if (tonKho == null)
-                    {
-                        if (itemAdjustment.ChenhLech < 0)
-                        {
-                            await transaction.RollbackAsync();
-                            return ApiResponse<KiemKeResponseDto>.Fail("Điều chỉnh kiểm kê không thể làm tồn kho âm");
-                        }
-
-                        tonKho = new TonKhoTucThoi
-                        {
-                            MaHangHoa = itemAdjustment.MaHangHoa,
-                            MaKho = kiemKe.MaKho,
-                            SoLuongTon = itemAdjustment.ChenhLech,
-                            NgayCapNhat = DateTime.UtcNow
-                        };
-                        await _context.TonKhoTucThois.AddAsync(tonKho);
-                    }
-                    else
-                    {
-                        if (tonKho.SoLuongTon + itemAdjustment.ChenhLech < 0)
-                        {
-                            await transaction.RollbackAsync();
-                            return ApiResponse<KiemKeResponseDto>.Fail("Điều chỉnh kiểm kê không thể làm tồn kho âm");
-                        }
-
-                        tonKho.SoLuongTon += itemAdjustment.ChenhLech;
-                        tonKho.NgayCapNhat = DateTime.UtcNow;
-                    }
                 }
 
                 await _context.GiaoDichKhos.AddAsync(giaoDichDC);
