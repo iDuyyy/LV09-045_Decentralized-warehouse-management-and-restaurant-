@@ -251,39 +251,84 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // 3. Greeting & Chip
   Widget _buildGreetingBanner(String displayName) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Xin chào, $displayName', style: AppTextStyles.itemTitle.copyWith(fontSize: 16)),
-              const SizedBox(height: 2),
-              Text(
-                'Tình hình vận hành kho của Nhà hàng An Nhiên hôm nay.',
-                style: AppTextStyles.cardHeaderSub.copyWith(fontSize: 13),
-              ),
-            ],
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.primaryDark,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryDark.withValues(alpha: 0.16),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
-        ),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: const Color(0xFFEBF5FF),
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: const Text(
-            'Cập nhật 10:30',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: Color(0xFF2563EB),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'TỔNG QUAN VẬN HÀNH',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.72),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 7),
+                Text(
+                  'Xin chào, $displayName',
+                  style: AppTextStyles.itemTitle.copyWith(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Tình hình vận hành kho của Nhà hàng An Nhiên hôm nay.',
+                  style: AppTextStyles.cardHeaderSub.copyWith(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    fontSize: 12,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ),
           ),
-        ),
-      ],
+          const SizedBox(width: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+            ),
+            child: const Column(
+              children: [
+                Icon(Icons.schedule_rounded, color: Colors.white, size: 16),
+                SizedBox(height: 4),
+                Text(
+                  '10:30',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
